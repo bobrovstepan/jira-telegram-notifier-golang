@@ -11,7 +11,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/bobrovstepan/jira-telegram-notifier/internal/telegram"
+	"jira-telegram-notifier/internal/telegram"
 )
 
 type JiraHandler struct {
