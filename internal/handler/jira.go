@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"net/http"
 	"regexp"
 	"strings"
@@ -14,13 +15,10 @@ import (
 	"jira-telegram-notifier/internal/telegram"
 )
 
-type JiraHandler struct {
-	secret string
-	sender *telegram.Sender
-}
+type JiraHandler struct{}
 
-func NewJiraHandler(secret string, sender *telegram.Sender) *JiraHandler {
-	return &JiraHandler{secret: secret, sender: sender}
+func NewJiraHandler() *JiraHandler {
+	return &JiraHandler{}
 }
 
 func (h *JiraHandler) Handle(w http.ResponseWriter, r *http.Request) {
@@ -36,27 +34,50 @@ func (h *JiraHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	if !h.verifySignature(r.Header.Get("X-Hub-Signature"), body) {
-		http.Error(w, `{"message":"Unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
 
+	projectKey := getProjectKey(payload)
+	secret := getWebhookSecret(projectKey)
+
+	if !verifySignature(r.Header.Get("X-Hub-Signature"), body, secret) {
+		http.Error(w, `{"message":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
 	message := buildMessage(payload)
 	if message != "" {
-		h.sender.Send(message)
+		if sender := newSenderForProject(projectKey); sender != nil {
+			sender.Send(message)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprint(w, `{"message":"ok"}`)
 }
 
-func (h *JiraHandler) verifySignature(header string, body []byte) bool {
+func getProjectKey(payload map[string]any) string {
+	issue, _ := payload["issue"].(map[string]any)
+	fields, _ := issue["fields"].(map[string]any)
+	project, _ := fields["project"].(map[string]any)
+	key, _ := project["key"].(string)
+	return key
+}
+
+func newSenderForProject(projectKey string) *telegram.Sender {
+	botToken := os.Getenv(projectKey + "_TELEGRAM_BOT_TOKEN")
+	chatID := os.Getenv(projectKey + "_TELEGRAM_CHAT_ID")
+	threadID := os.Getenv(projectKey + "_TELEGRAM_THREAD_ID")
+	if botToken == "" || chatID == "" {
+		return nil
+	}
+	return telegram.NewSender(botToken, chatID, threadID)
+}
+
+func verifySignature(header string, body []byte, secret string) bool {
 	if header == "" || !strings.Contains(header, "=") {
 		return false
 	}
@@ -64,7 +85,7 @@ func (h *JiraHandler) verifySignature(header string, body []byte) bool {
 	parts := strings.SplitN(header, "=", 2)
 	theirSig := parts[1]
 
-	mac := hmac.New(sha256.New, []byte(h.secret))
+	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	ourSig := hex.EncodeToString(mac.Sum(nil))
 
@@ -168,21 +189,42 @@ func buildMessage(payload map[string]any) string {
 
 func formatEventType(event string) string {
 	switch {
-	case strings.Contains(event, "created"):
-		return "Created"
-	case strings.Contains(event, "updated"):
-		return "Updated"
-	case strings.Contains(event, "deleted"):
-		return "Deleted"
-	case strings.Contains(event, "comment"):
-		return "Comment"
-	case strings.Contains(event, "worklog"):
-		return "Worklog"
-	case strings.Contains(event, "sprint"):
-		return "Sprint"
-	default:
-		s := strings.ReplaceAll(event, "jira:", "")
-		s = strings.ReplaceAll(s, "_", " ")
-		return strings.Title(s)
+		case strings.Contains(event, "created"):
+			return "Created"
+		case strings.Contains(event, "updated"):
+			return "Updated"
+		case strings.Contains(event, "deleted"):
+			return "Deleted"
+		case strings.Contains(event, "comment"):
+			return "Comment"
+		case strings.Contains(event, "worklog"):
+			return "Worklog"
+		case strings.Contains(event, "sprint"):
+			return "Sprint"
+		default:
+			s := strings.ReplaceAll(event, "jira:", "")
+			s = strings.ReplaceAll(s, "_", " ")
+			return strings.Title(s)
 	}
+}
+
+func getProjectKeyFromPayload(payload map[string]any) string {
+	issue, _ := payload["issue"].(map[string]any)
+	if issue == nil {
+		return ""
+	}
+	fields, _ := issue["fields"].(map[string]any)
+	if fields == nil {
+		return ""
+	}
+	project, _ := fields["project"].(map[string]any)
+	if project == nil {
+		return ""
+	}
+	key, _ := project["key"].(string)
+	return key
+}
+
+func getWebhookSecret(projectKey string) string {
+	return os.Getenv(projectKey + "_JIRA_WEBHOOK_SECRET")
 }
