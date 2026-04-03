@@ -40,7 +40,7 @@ func (h *JiraHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projectKey := getProjectKey(payload)
+	projectKey := getProjectKeyFromPayload(payload)
 	secret := getWebhookSecret(projectKey)
 
 	if !verifySignature(r.Header.Get("X-Hub-Signature"), body, secret) {
@@ -59,13 +59,6 @@ func (h *JiraHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, `{"message":"ok"}`)
 }
 
-func getProjectKey(payload map[string]any) string {
-	issue, _ := payload["issue"].(map[string]any)
-	fields, _ := issue["fields"].(map[string]any)
-	project, _ := fields["project"].(map[string]any)
-	key, _ := project["key"].(string)
-	return key
-}
 
 func newSenderForProject(projectKey string) *telegram.Sender {
 	botToken := os.Getenv(projectKey + "_TELEGRAM_BOT_TOKEN")
